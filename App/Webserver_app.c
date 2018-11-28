@@ -18,6 +18,65 @@
 
 #define FILENAME "/Users/jaspreetsingh/Desktop/workspace/Practice/WebserverApplication/Images/Jaspreet.png"
 #define MIMETYPE "image/png"
+#define SERVERKEYFILE "/Users/jaspreetsingh/Desktop/workspace/Practice/WebserverApplication/GitRepo/WebserverDaemon/Key/server.key"
+#define SERVERCERTFILE "/Users/jaspreetsingh/Desktop/workspace/Practice/WebserverApplication/GitRepo/WebserverDaemon/Cert/server.pem"
+
+static long
+get_file_size (const char *filename)
+{
+    FILE *fp;
+    
+    fp = fopen (filename, "rb");
+    if (fp)
+    {
+        long size;
+        
+        if ((0 != fseek (fp, 0, SEEK_END)) || (-1 == (size = ftell (fp))))
+            size = 0;
+        
+        fclose (fp);
+        
+        return size;
+    }
+    else
+        return 0;
+}
+
+
+static char *
+load_file (const char *filename)
+{
+    FILE *fp;
+    char *buffer;
+    long size;
+    
+    size = get_file_size (filename);
+    if (0 == size) {
+        printf ("Size of file %s is 0\n", filename);
+        return NULL;
+    }
+    
+    fp = fopen (filename, "rb");
+    if (! fp)
+        return NULL;
+    
+    buffer = malloc (size + 1);
+    if (! buffer)
+    {
+        fclose (fp);
+        return NULL;
+    }
+    buffer[size] = '\0';
+    
+    if (size != (long)fread (buffer, 1, size, fp))
+    {
+        free (buffer);
+        buffer = NULL;
+    }
+    
+    fclose (fp);
+    return buffer;
+}
 
 int print_out_key (void *cls, enum MHD_ValueKind kind,
 	const char *key, const char *value)
@@ -27,7 +86,7 @@ int print_out_key (void *cls, enum MHD_ValueKind kind,
 }
 
 static int
-ahc_echo (void *cls,
+ConnectionHandler (void *cls,
           struct MHD_Connection *connection,
           const char *url,
           const char *method,
@@ -114,26 +173,59 @@ static int print_client_info (void *cls,
 int
 main (int argc, char *const *argv)
 {
-  struct MHD_Daemon *d;
+  struct MHD_Daemon *daemon;
+    char *key_pem;
+    char *cert_pem;
 
-  if (argc != 2)
+  if (argc != 3)
     {
-      printf ("%s PORT\n", argv[0]);
+      printf ("%s PORT HTTP/HTTPS\n", argv[0]);
       return 1;
     }
-  d = MHD_start_daemon (/* MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG, */
+    int using_https = 0;
+    if (strcmp(argv[2], "HTTPS") == 0) {
+        using_https = 1;
+        key_pem = load_file (SERVERKEYFILE);
+        cert_pem = load_file (SERVERCERTFILE);
+    
+        if ((key_pem == NULL) || (cert_pem == NULL))
+        {
+            printf ("The key/certificate files could not be read.\n");
+            return 1;
+        }
+        
+        daemon = MHD_start_daemon (MHD_USE_SELECT_INTERNALLY | MHD_USE_SSL | MHD_USE_ERROR_LOG,
+                                   atoi (argv[1]),
+                                   &print_client_info, NULL, &ConnectionHandler, PAGE,
+                                   MHD_OPTION_HTTPS_MEM_KEY, key_pem,
+                                   MHD_OPTION_HTTPS_MEM_CERT, cert_pem,
+                                   MHD_OPTION_END);
+    } else {
+    
+        daemon = MHD_start_daemon (/* MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG, */
                         MHD_USE_AUTO | MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG,
                         /* MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG | MHD_USE_POLL, */
                         /* MHD_USE_THREAD_PER_CONNECTION | MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG | MHD_USE_POLL, */
                         /* MHD_USE_THREAD_PER_CONNECTION | MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_LOG, */
                         atoi (argv[1]),
-                        &print_client_info, NULL, &ahc_echo, PAGE,
+                        &print_client_info, NULL, &ConnectionHandler, PAGE,
                         MHD_OPTION_CONNECTION_TIMEOUT, (unsigned int) 120,
                         MHD_OPTION_STRICT_FOR_CLIENT, (int) 1,
                         MHD_OPTION_END);
-  if (d == NULL)
-    return 1;
+    }
+    if (daemon == NULL) {
+        printf ("Failed to create daemon!!! Terminating..!\n");
+        if (using_https) {
+            free (key_pem);
+            free (cert_pem);
+        }
+        return 1;
+    }
   (void) getchar ();
-  MHD_stop_daemon (d);
+  MHD_stop_daemon (daemon);
+    if (using_https) {
+        free (key_pem);
+        free (cert_pem);
+    }
   return 0;
 }
